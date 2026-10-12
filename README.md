@@ -3,8 +3,10 @@
 Generates a **5-minute seamless loop video**: ambient music + nature sounds over
 animated artwork. The main concept is the **Amazon rainforest**: an abstract
 vector-art forest interior with light shafts through the canopy, swaying
-leaves and vines, falling leaves, rain, drifting mist and a passing blue
-morpho butterfly, with kalimba / flute / pad music over a rainforest soundscape.
+leaves and vines, falling leaves, rain, drifting mist, blue morpho butterflies
+and lightning flashing behind the trees, set to a jazzy lofi beat (swung
+drums, Rhodes, bass, vinyl crackle) over a rainforest soundscape. Each
+lightning strike is followed by its thunder about three seconds later.
 
 The loop is seamless by design. The last frame and last audio sample flow
 straight back into the first, so the video can be looped on YouTube, or
@@ -54,7 +56,8 @@ nature sounds:
 |---|---|---|
 | `rainforest_ambience` | amazon rainforest ambience | insects, frogs, jungle birds |
 | `rain_on_leaves` | rain on leaves jungle | jungle rain |
-| `distant_thunder` | distant thunder rumble | thunder |
+
+Thunder is always synthesised so it stays in sync with the on-screen lightning.
 
 Two ways to supply them:
 
@@ -73,13 +76,17 @@ layers are used. `--synth-only` forces that.
 | Piece | File | Notes |
 |---|---|---|
 | Animated rainforest | `ambient_loop/rainforest.py` | Vector shapes drawn with Cairo every frame, rendered in parallel and piped to ffmpeg |
-| Music | `ambient_loop/audio.py` | Warm chord pads, kalimba phrases, breathy flute, long reverb |
+| Lofi music | `ambient_loop/lofi.py` | Swung boom-bap drums, Rhodes ii–V–I–vi chords, bass, melody, sidechain pump, vinyl crackle |
+| Other music styles | `ambient_loop/audio.py` | Pads + bells, or pads + kalimba + flute |
+| Lightning timeline | `ambient_loop/storm.py` | Shared by the visuals (flash) and audio (thunder) |
 | Synth nature sounds | `ambient_loop/audio.py` | Jungle rain with leaf drips, insects, tree frogs, tropical birds, distant thunder |
 | Field recordings | `ambient_loop/recordings.py` | Freesound CC0 fetch + seamless looping |
 | Still-image presets | `ambient_loop/video.py` | Generated landscape (or your `--image`) with a slow camera drift |
 | Presets / CLI | `ambient_loop/cli.py` | Combines the above |
 
 Seamless-loop tricks:
+- The beat's tempo is nudged (76 → 76.8 BPM for 5 minutes) so a whole number
+  of 8-bar sections fills the loop, and the groove runs straight through the join.
 - Every animation completes a whole number of cycles per loop: wind gusts, leaf
   sway, light-shaft pulsing. Anything that travels (raindrops, falling leaves,
   mist, the butterfly) crosses the frame a whole number of times.

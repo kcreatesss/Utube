@@ -2,7 +2,8 @@
 
 The scene is drawn as flat vector shapes on every frame: layered trunks,
 light shafts through the canopy, drifting mist, swaying leaves and vines,
-falling leaves, rain, floating spores and a passing blue morpho butterfly.
+falling leaves, rain, floating spores, blue morpho butterflies and distant
+lightning strikes flashing behind the trees.
 
 Every motion is periodic over the loop length T: oscillations use whole
 numbers of cycles per loop, and anything that travels (rain, leaves, mist,
@@ -16,6 +17,8 @@ import subprocess
 
 import cairocffi as cairo
 import numpy as np
+
+from . import storm
 
 TAU = 2 * math.pi
 
@@ -161,9 +164,36 @@ class Scene:
                  kp=int(rng.integers(20, 40)))
             for _ in range(35)
         ]
-        # The butterfly crosses the frame a whole number of times per loop.
-        self.morpho = dict(k=max(1, int(round(duration / 75))), y=0.45 * H,
-                           flap=int(round(duration * 2.2)))
+        # Two butterflies on offset paths; each crosses the frame a whole
+        # number of times per loop (about every 30 s).
+        self.butterflies = [
+            dict(k=max(1, int(round(duration / 30))), offset=0.0, y=0.45 * H, size=1.7,
+                 flap=int(round(duration * 2.2)), dir=1),
+            dict(k=max(1, int(round(duration / 34))), offset=0.5, y=0.3 * H, size=1.3,
+                 flap=int(round(duration * 2.6)), dir=-1),
+        ]
+
+        # Lightning: a jagged bolt with branches per strike, shared timeline with the thunder.
+        self.strikes = []
+        for st in storm.lightning_times(duration, seed):
+            x = rng.uniform(0.2, 0.8) * W
+            y_end = rng.uniform(0.45, 0.7) * H
+            bolt = [(x, -10.0)]
+            while bolt[-1][1] < y_end:
+                bx, by = bolt[-1]
+                bolt.append((bx + rng.uniform(-45, 45) * s, by + rng.uniform(25, 60) * s))
+            branches = []
+            for _ in range(int(rng.integers(2, 4))):
+                bx, by = bolt[int(rng.integers(2, len(bolt) - 2))]
+                direction = rng.choice([-1, 1])
+                branch = [(bx, by)]
+                for _ in range(int(rng.integers(3, 7))):
+                    bx += direction * rng.uniform(15, 50) * s
+                    by += rng.uniform(15, 45) * s
+                    branch.append((bx, by))
+                branches.append(branch)
+            self.strikes.append(dict(t=st, x=x, bolt=bolt, branches=branches,
+                                     power=rng.uniform(0.7, 1.0)))
 
     # -- time helpers -------------------------------------------------------
 
@@ -176,6 +206,14 @@ class Scene:
         k, ph = self.gust_k, self.gust_phase
         return (0.55 * math.sin(k[0] * p + ph[0]) + 0.3 * math.sin(k[1] * p + ph[1])
                 + 0.15 * math.sin(k[2] * p + ph[2]))
+
+    def lightning(self, t):
+        """(flash brightness 0..1, strike, seconds since it) for the active strike."""
+        for st in self.strikes:
+            dt = (t - st["t"]) % self.T
+            if dt < storm.FLASH_SECONDS:
+                return storm.flash_intensity(dt) * st["power"], st, dt
+        return 0.0, None, 0.0
 
     def sway(self, t, x, k, ph, amount):
         """Angle for an element: wind gust plus its own gentle oscillation."""
@@ -321,11 +359,33 @@ def draw_heliconia(ctx, h, scene, t):
                   h["h"] * 0.75, 45 * s, side * 0.2, PALETTE["fore"][1], PALETTE["vein"])
 
 
-def draw_morpho(ctx, scene, t):
-    m = scene.morpho
+def draw_lightning(ctx, scene, strike, flash, dt):
+    """Bolt and sky flash, drawn behind the far trees."""
+    s, H = scene.s, scene.H
+    sky = cairo.RadialGradient(strike["x"], H * 0.25, 0, strike["x"], H * 0.25, H * 1.1)
+    sky.add_color_stop_rgba(0, 0.88, 0.92, 1.0, 0.85 * flash)
+    sky.add_color_stop_rgba(1, 0.88, 0.92, 1.0, 0.0)
+    ctx.set_source(sky)
+    ctx.paint()
+    if dt > 0.4:  # the bolt itself only lingers for the flicker
+        return
+    for width, alpha in ((14, 0.18), (6, 0.35), (2.2, 1.0)):
+        ctx.set_line_width(width * s)
+        ctx.set_source_rgba(0.95, 0.97, 1.0, alpha * min(1.0, flash * 1.4))
+        for path, scale in [(strike["bolt"], 1.0)] + [(b, 0.6) for b in strike["branches"]]:
+            ctx.set_line_width(width * s * scale)
+            ctx.move_to(*path[0])
+            for pt in path[1:]:
+                ctx.line_to(*pt)
+            ctx.stroke()
+
+
+def draw_butterfly(ctx, scene, t, m):
     s = scene.s
     span = scene.W * 1.6
-    u = (m["k"] * t / scene.T) % 1.0
+    u = (m["k"] * t / scene.T + m["offset"]) % 1.0
+    if m["dir"] < 0:
+        u = 1 - u
     x = -0.3 * scene.W + u * span
     p = scene.phase(t)
     y = m["y"] + 90 * s * math.sin(m["k"] * 5 * p) + 40 * s * math.sin(m["k"] * 13 * p + 1)
@@ -333,7 +393,7 @@ def draw_morpho(ctx, scene, t):
     blue, sheen, edge = PALETTE["morpho"]
     ctx.save()
     ctx.translate(x, y)
-    ctx.scale(1.7, 1.7)
+    ctx.scale(m["size"], m["size"])
     ctx.rotate(0.15 * math.sin(m["k"] * 9 * p))
     for side in (-1, 1):
         for (wx, wy, rx, ry) in ((10, -6, 18, 12), (7, 8, 12, 9)):
@@ -381,6 +441,10 @@ def render_frame(scene, t, surface=None):
     glow.add_color_stop_rgba(1, *pal["glow"], 0)
     ctx.set_source(glow)
     ctx.paint()
+
+    flash, strike, flash_dt = scene.lightning(t)
+    if strike is not None and flash > 0.005:
+        draw_lightning(ctx, scene, strike, flash, flash_dt)
 
     # Far trunks, hazy and nearly still.
     for tr in scene.far_trunks:
@@ -483,7 +547,8 @@ def render_frame(scene, t, surface=None):
             ctx.stroke()
 
     draw_rain((0, 1))
-    draw_morpho(ctx, scene, t)
+    for b in scene.butterflies:
+        draw_butterfly(ctx, scene, t, b)
 
     # Hanging vines: pendulums that swing more toward their tips.
     for v in scene.vines:
@@ -533,6 +598,11 @@ def render_frame(scene, t, surface=None):
 
     draw_rain((2,))
     draw_mist(front=True)
+
+    # The flash briefly lights the whole forest.
+    if flash > 0.005:
+        ctx.set_source_rgba(0.85, 0.9, 1.0, 0.22 * flash)
+        ctx.paint()
 
     # Vignette.
     vg = cairo.RadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, W * 0.75)

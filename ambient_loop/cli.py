@@ -12,7 +12,8 @@ from . import audio, rainforest, recordings, video
 # listed in "replaces".
 PRESETS = {
     "amazon": {
-        "music": {"key": "G", "mood": "major", "style": "rainforest", "chord_seconds": 24},
+        "music": {"key": "F", "mood": "major", "style": "lofi", "bpm": 76},
+        "music_gain": 1.0,
         "nature": {"jungle_rain": 0.45, "insects": 0.15, "frogs": 0.15,
                    "jungle_birds": 0.3, "thunder": 0.3},
         "recordings": {
@@ -20,8 +21,7 @@ PRESETS = {
                                     "replaces": ["insects", "frogs", "jungle_birds"]},
             "rain_on_leaves": {"query": "rain on leaves jungle", "gain": 0.45,
                                "replaces": ["jungle_rain"]},
-            "distant_thunder": {"query": "distant thunder rumble", "gain": 0.3,
-                                "replaces": ["thunder"]},
+            # Thunder stays synthesised so it lands right after each on-screen flash.
         },
         "scene": "rainforest",
     },
@@ -63,7 +63,7 @@ def main():
     p.add_argument("--seed", type=int, default=1, help="change for a different variation")
     p.add_argument("--image", type=Path, help="use your own background image instead of a generated one")
     p.add_argument("--no-music", action="store_true", help="nature sounds only")
-    p.add_argument("--music-gain", type=float, default=0.6, help="music level relative to nature (default 0.6)")
+    p.add_argument("--music-gain", type=float, help="music level relative to nature (preset default, usually 0.6)")
     p.add_argument("--key", help="override the preset's musical key, e.g. C, F#, Bb is written A#")
     p.add_argument("--width", type=int, default=1920)
     p.add_argument("--height", type=int, default=1080)
@@ -111,7 +111,8 @@ def main():
             loops.append((loop, rec["gain"]))
             for replaced in rec["replaces"]:
                 nature.pop(replaced, None)
-    mix = audio.render_mix(args.duration, args.seed, music, nature, args.music_gain, loops)
+    music_gain = args.music_gain if args.music_gain is not None else preset.get("music_gain", 0.6)
+    mix = audio.render_mix(args.duration, args.seed, music, nature, music_gain, loops)
     audio.write_wav(wav_path, mix)
     print(f"  -> {wav_path} ({time.time() - t0:.1f}s)")
     if args.audio_only:

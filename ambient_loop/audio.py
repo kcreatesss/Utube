@@ -10,6 +10,8 @@ import wave
 
 import numpy as np
 
+from . import storm
+
 SAMPLE_RATE = 44100
 
 # Semitone offsets from the root for a few moods.
@@ -225,8 +227,15 @@ def render_flute(n, rng, key, mood, phrases_per_minute=1.5):
     return out
 
 
-def render_music(n, rng, key="D", mood="major", chord_seconds=20.0, bell_density=0.15, style="pads"):
-    """style: 'pads' (pads + bells) or 'rainforest' (warm pads, kalimba, flute)."""
+def render_music(n, rng, key="D", mood="major", chord_seconds=20.0, bell_density=0.15,
+                 style="pads", bpm=76):
+    """style: 'pads' (pads + bells), 'rainforest' (warm pads, kalimba, flute)
+    or 'lofi' (jazzy lofi beat with Rhodes, bass and a touch of flute)."""
+    if style == "lofi":
+        from .lofi import render_lofi
+        beat = render_lofi(n, rng, key=key, bpm=bpm, mood=mood)
+        flute = circular_reverb(render_flute(n, rng, key, mood, phrases_per_minute=0.8), rng, 4.0, 0.5)
+        return beat + 0.18 * normalize_rms(flute)
     pads = render_pads(n, rng, key, mood, chord_seconds)
     if style == "rainforest":
         mix = (0.8 * normalize_rms(pads) + 0.55 * normalize_rms(render_kalimba(n, rng, key, mood))
@@ -390,10 +399,14 @@ def jungle_birds(n, rng, calls_per_minute=6):
     return normalize_rms(whistles) + 0.6 * normalize_rms(birds(n, rng, calls_per_minute=5))
 
 
-def thunder(n, rng, rumbles=3):
-    """A few distant, slow rumbles per loop."""
+def thunder(n, rng, rumbles=3, strike_times=None):
+    """Distant, slow rumbles; if strike_times is given, each follows its lightning flash."""
     out = np.zeros((n, 2))
-    for pos in (np.arange(rumbles) + rng.uniform(0.1, 0.9, rumbles)) * n / rumbles:
+    if strike_times is not None:
+        starts = [(st + storm.THUNDER_DELAY) * SAMPLE_RATE for st in strike_times]
+    else:
+        starts = (np.arange(rumbles) + rng.uniform(0.1, 0.9, rumbles)) * n / rumbles
+    for pos in starts:
         dur = rng.uniform(7, 12)
         m = int(dur * SAMPLE_RATE)
         t = np.arange(m) / SAMPLE_RATE
@@ -404,7 +417,7 @@ def thunder(n, rng, rumbles=3):
             add_wrapped(out[:, ch], int(pos), rumble * env)
     # Keep it deep and distant: circular low-pass in the frequency domain.
     freqs = np.fft.rfftfreq(n, 1 / SAMPLE_RATE)
-    mask = 1 / (1 + (freqs / 180) ** 4) / (1 + (25 / np.maximum(freqs, 1)) ** 4)
+    mask = 1 / (1 + (freqs / 240) ** 4) / (1 + (25 / np.maximum(freqs, 1)) ** 4)
     for ch in range(2):
         out[:, ch] = np.fft.irfft(np.fft.rfft(out[:, ch]) * mask, n)
     return out
@@ -446,7 +459,8 @@ def render_mix(duration, seed, music, nature, music_gain=1.0, recordings=()):
     if music is not None:
         mix += music_gain * normalize_rms(render_music(n, rng, **music))
     for name, gain in nature.items():
-        mix += gain * normalize_rms(NATURE_LAYERS[name](n, rng))
+        kwargs = {"strike_times": storm.lightning_times(duration, seed)} if name == "thunder" else {}
+        mix += gain * normalize_rms(NATURE_LAYERS[name](n, rng, **kwargs))
     for audio, gain in recordings:
         mix += gain * normalize_rms(audio[:n])
     # Consistent loudness (~-18 dBFS RMS), with a soft limiter for stray peaks.
