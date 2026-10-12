@@ -165,8 +165,73 @@ def render_bells(n, rng, key, mood, density):
     return out
 
 
-def render_music(n, rng, key="D", mood="major", chord_seconds=20.0, bell_density=0.15):
+def render_kalimba(n, rng, key, mood, phrases_per_minute=5):
+    """Short plucked phrases, like a kalimba or soft marimba."""
+    out = np.zeros((n, 2))
+    scale = SCALES[mood]
+    notes = [root_midi(key) + 12 + o * 12 + d for o in (0, 1) for d in scale]
+    note_len = int(3 * SAMPLE_RATE)
+    t = np.arange(note_len) / SAMPLE_RATE
+    pos = 0
+    while True:
+        pos += int(rng.uniform(0.6, 1.4) * 60 / phrases_per_minute * SAMPLE_RATE)
+        if pos >= n:
+            break
+        idx = int(rng.integers(0, len(notes)))
+        step = rng.choice([-1, 1])
+        start = pos
+        for _ in range(rng.integers(3, 7)):
+            f = midi_to_hz(notes[idx])
+            # Inharmonic upper partial with a fast decay gives the "tine" sound.
+            tone = (np.sin(2 * np.pi * f * t) * np.exp(-t * 2.2)
+                    + 0.35 * np.sin(2 * np.pi * 5.4 * f * t) * np.exp(-t * 14))
+            tone *= 1 - np.exp(-t * 400)
+            stereo = pan(tone * rng.uniform(0.5, 1.0), rng.uniform(-0.5, 0.5))
+            add_wrapped(out[:, 0], start, stereo[:, 0])
+            add_wrapped(out[:, 1], start, stereo[:, 1])
+            start += int(rng.choice([0.33, 0.5, 0.66]) * SAMPLE_RATE)
+            idx = int(np.clip(idx + step * rng.integers(1, 3), 0, len(notes) - 1))
+            if rng.random() < 0.25:
+                step = -step
+    return out
+
+
+def render_flute(n, rng, key, mood, phrases_per_minute=1.5):
+    """Occasional long, breathy wooden-flute notes with gentle vibrato."""
+    out = np.zeros((n, 2))
+    scale = SCALES[mood]
+    root = root_midi(key) + 24
+    pos = 0
+    while True:
+        pos += int(rng.uniform(0.6, 1.4) * 60 / phrases_per_minute * SAMPLE_RATE)
+        if pos >= n:
+            break
+        start = pos
+        for _ in range(rng.integers(2, 5)):
+            dur = rng.uniform(1.8, 3.5)
+            m = int(dur * SAMPLE_RATE)
+            t = np.arange(m) / SAMPLE_RATE
+            f = midi_to_hz(root + rng.choice(scale))
+            vibrato = 1 + 0.004 * np.sin(2 * np.pi * 5 * t) * np.clip(t - 0.5, 0, 1)
+            phase = 2 * np.pi * np.cumsum(f * vibrato) / SAMPLE_RATE
+            env = np.clip(t / 0.4, 0, 1) * np.clip((dur - t) / 1.0, 0, 1)
+            breath = rng.standard_normal(m)
+            breath = np.convolve(breath, np.ones(8) / 8, mode="same") * 0.08
+            tone = (np.sin(phase) + 0.15 * np.sin(2 * phase) + breath * (0.5 + 0.5 * np.sin(phase))) * env
+            stereo = pan(tone, rng.uniform(-0.3, 0.3))
+            add_wrapped(out[:, 0], start, stereo[:, 0])
+            add_wrapped(out[:, 1], start, stereo[:, 1])
+            start += int((dur - rng.uniform(0.2, 0.6)) * SAMPLE_RATE)
+    return out
+
+
+def render_music(n, rng, key="D", mood="major", chord_seconds=20.0, bell_density=0.15, style="pads"):
+    """style: 'pads' (pads + bells) or 'rainforest' (warm pads, kalimba, flute)."""
     pads = render_pads(n, rng, key, mood, chord_seconds)
+    if style == "rainforest":
+        mix = (0.8 * normalize_rms(pads) + 0.55 * normalize_rms(render_kalimba(n, rng, key, mood))
+               + 0.35 * normalize_rms(render_flute(n, rng, key, mood)))
+        return circular_reverb(mix, rng, seconds=5.0, wet=0.5)
     bells = render_bells(n, rng, key, mood, bell_density)
     mix = normalize_rms(pads) + 0.5 * normalize_rms(bells)
     return circular_reverb(mix, rng, seconds=4.0, wet=0.45)
@@ -257,7 +322,100 @@ def crickets(n, rng, num_crickets=4):
     return out
 
 
+def jungle_rain(n, rng):
+    """Heavy rain on broad leaves: a dense bed plus low, hollow drips."""
+    bed = np.stack([shaped_noise(n, rng, 250, 7000, tilt=-3.5) for _ in range(2)], axis=1)
+    bed *= slow_envelope(n, rng, max_hz=0.03, floor=0.6)[:, None]
+    drips = np.zeros((n, 2))
+    drip_len = int(0.08 * SAMPLE_RATE)
+    t = np.arange(drip_len) / SAMPLE_RATE
+    for pos in rng.integers(0, n, size=int(n / SAMPLE_RATE * 6)):
+        f0 = rng.uniform(500, 1400)
+        sweep = f0 * (1 + 1.5 * t / t[-1])  # pitch rises as the drop bounces off
+        d = np.sin(2 * np.pi * np.cumsum(sweep) / SAMPLE_RATE) * np.exp(-t * 60)
+        stereo = pan(d * rng.uniform(0.3, 1), rng.uniform(-0.9, 0.9))
+        add_wrapped(drips[:, 0], pos, stereo[:, 0])
+        add_wrapped(drips[:, 1], pos, stereo[:, 1])
+    return bed + 0.35 * normalize_rms(drips)
+
+
+def insects(n, rng):
+    """Cicada-like shimmer that swells and fades."""
+    out = np.zeros((n, 2))
+    t = np.arange(n) / SAMPLE_RATE
+    duration = n / SAMPLE_RATE
+    for ch in range(2):
+        buzz_hz = round(rng.uniform(90, 140) * duration) / duration  # whole cycles per loop
+        pulse = 0.5 + 0.5 * np.sin(2 * np.pi * buzz_hz * t)
+        swell = slow_envelope(n, rng, max_hz=0.04, floor=0.1) ** 2
+        out[:, ch] = shaped_noise(n, rng, 4500, 7500) * pulse * swell
+    return out
+
+
+def frogs(n, rng, calls_per_minute=18):
+    """Tree frogs: short runs of bright, knocking pulses."""
+    out = np.zeros((n, 2))
+    pulse_len = int(0.035 * SAMPLE_RATE)
+    t = np.arange(pulse_len) / SAMPLE_RATE
+    for pos in rng.integers(0, n, size=int(n / SAMPLE_RATE / 60 * calls_per_minute)):
+        f = rng.uniform(1200, 2800)
+        position = rng.uniform(-0.9, 0.9)
+        level = rng.uniform(0.3, 1.0)
+        pulse = np.sin(2 * np.pi * f * t) * np.sin(np.pi * t / t[-1]) ** 3
+        gap = int(rng.uniform(0.06, 0.15) * SAMPLE_RATE)
+        for i in range(rng.integers(2, 7)):
+            p = pan(pulse * level, position)
+            add_wrapped(out[:, 0], pos + i * gap, p[:, 0])
+            add_wrapped(out[:, 1], pos + i * gap, p[:, 1])
+    return circular_reverb(out, rng, seconds=1.2, wet=0.3)
+
+
+def jungle_birds(n, rng, calls_per_minute=6):
+    """Slow, fluting tropical whistles, mixed with the small-bird chirps."""
+    out = np.zeros((n, 2))
+    for pos in rng.integers(0, n, size=int(n / SAMPLE_RATE / 60 * calls_per_minute)):
+        position = rng.uniform(-0.9, 0.9)
+        f0 = rng.uniform(1100, 2400)
+        start = pos
+        for _ in range(rng.integers(2, 4)):
+            m = int(rng.uniform(0.25, 0.6) * SAMPLE_RATE)
+            t = np.arange(m) / SAMPLE_RATE
+            glide = f0 * (1 + rng.uniform(-0.35, 0.25) * t / t[-1])
+            tone = np.sin(2 * np.pi * np.cumsum(glide) / SAMPLE_RATE) * np.sin(np.pi * t / t[-1]) ** 2
+            p = pan(tone * rng.uniform(0.4, 1.0), position)
+            add_wrapped(out[:, 0], start, p[:, 0])
+            add_wrapped(out[:, 1], start, p[:, 1])
+            start += m + int(rng.uniform(0.05, 0.3) * SAMPLE_RATE)
+    whistles = circular_reverb(out, rng, seconds=2.0, wet=0.4)
+    return normalize_rms(whistles) + 0.6 * normalize_rms(birds(n, rng, calls_per_minute=5))
+
+
+def thunder(n, rng, rumbles=3):
+    """A few distant, slow rumbles per loop."""
+    out = np.zeros((n, 2))
+    for pos in (np.arange(rumbles) + rng.uniform(0.1, 0.9, rumbles)) * n / rumbles:
+        dur = rng.uniform(7, 12)
+        m = int(dur * SAMPLE_RATE)
+        t = np.arange(m) / SAMPLE_RATE
+        env = np.clip(t / 1.2, 0, 1) * np.exp(-np.clip(t - 1.2, 0, None) / (dur / 4))
+        env *= 0.6 + 0.4 * np.abs(np.sin(2 * np.pi * rng.uniform(0.3, 0.7) * t))
+        for ch in range(2):
+            rumble = rng.standard_normal(m)
+            add_wrapped(out[:, ch], int(pos), rumble * env)
+    # Keep it deep and distant: circular low-pass in the frequency domain.
+    freqs = np.fft.rfftfreq(n, 1 / SAMPLE_RATE)
+    mask = 1 / (1 + (freqs / 180) ** 4) / (1 + (25 / np.maximum(freqs, 1)) ** 4)
+    for ch in range(2):
+        out[:, ch] = np.fft.irfft(np.fft.rfft(out[:, ch]) * mask, n)
+    return out
+
+
 NATURE_LAYERS = {
+    "jungle_rain": jungle_rain,
+    "insects": insects,
+    "frogs": frogs,
+    "jungle_birds": jungle_birds,
+    "thunder": thunder,
     "rain": rain,
     "wind": wind,
     "stream": stream,
@@ -275,11 +433,12 @@ def normalize_rms(x, target=1.0):
     return x * (target / (np.sqrt(np.mean(x**2)) + 1e-12))
 
 
-def render_mix(duration, seed, music, nature, music_gain=1.0):
+def render_mix(duration, seed, music, nature, music_gain=1.0, recordings=()):
     """Render the full loop.
 
     music: dict of render_music kwargs, or None for no music.
-    nature: dict of {layer_name: gain}.
+    nature: dict of {layer_name: gain} for the synthesised layers.
+    recordings: (stereo array already looped to the duration, gain) pairs.
     """
     rng = np.random.default_rng(seed)
     n = int(round(duration * SAMPLE_RATE))
@@ -288,6 +447,8 @@ def render_mix(duration, seed, music, nature, music_gain=1.0):
         mix += music_gain * normalize_rms(render_music(n, rng, **music))
     for name, gain in nature.items():
         mix += gain * normalize_rms(NATURE_LAYERS[name](n, rng))
+    for audio, gain in recordings:
+        mix += gain * normalize_rms(audio[:n])
     # Consistent loudness (~-18 dBFS RMS), with a soft limiter for stray peaks.
     mix = normalize_rms(mix, 0.125)
     return 0.89 * np.tanh(mix / 0.89)
